@@ -121,6 +121,14 @@ impl EasyFileSystem {
             (inode_id % inodes_per_block) as usize * inode_size,
         )
     }
+    /// Inverse of [`Self::get_disk_inode_pos`]: recover the inode id from
+    /// the block id and block offset of a disk inode
+    pub fn get_inode_id_by_pos(&self, block_id: u32, block_offset: usize) -> u32 {
+        let inode_size = core::mem::size_of::<DiskInode>();
+        let inodes_per_block = (BLOCK_SZ / inode_size) as u32;
+        (block_id - self.inode_area_start_block) * inodes_per_block
+            + (block_offset / inode_size) as u32
+    }
     /// Get data block by id
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
@@ -130,19 +138,24 @@ impl EasyFileSystem {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
     }
 
+    /// Deallocate an inode (only clears its bit in the inode bitmap)
+    pub fn dealloc_inode(&mut self, inode_id: u32) {
+        self.inode_bitmap.dealloc(&self.block_device, inode_id as usize)
+    }
+
     /// Allocate a data block
     pub fn alloc_data(&mut self) -> u32 {
         self.data_bitmap.alloc(&self.block_device).unwrap() as u32 + self.data_area_start_block
     }
     /// Deallocate a data block
     pub fn dealloc_data(&mut self, block_id: u32) {
-        get_block_cache(block_id as usize, Arc::clone(&self.block_device))
-            .lock()
-            .modify(0, |data_block: &mut DataBlock| {
-                data_block.iter_mut().for_each(|p| {
-                    *p = 0;
-                })
-            });
+        // NOTE: we do not zero the freed block on purpose. A freed block is
+        // garbage by definition: its content is only observable after the
+        // block is re-allocated, and every re-allocation path either fully
+        // overwrites it or reads it back only within the new file's size.
+        // Skipping the zeroing avoids one full dirty write-back per freed
+        // block, which dominates the cost of heavy create/write/unlink
+        // workloads (see ch6_file3).
         self.data_bitmap.dealloc(
             &self.block_device,
             (block_id - self.data_area_start_block) as usize,

@@ -74,8 +74,10 @@ impl Drop for BlockCache {
         self.sync()
     }
 }
-/// Use a block cache of 16 blocks
-const BLOCK_CACHE_SIZE: usize = 16;
+/// Use a block cache of 4096 blocks (2 MiB), large enough to keep every
+/// block touched by the file tests (app ELFs + data) resident in memory,
+/// so that heavy create/write/unlink workloads cause no virtio round trips
+const BLOCK_CACHE_SIZE: usize = 4096;
 
 pub struct BlockCacheManager {
     queue: VecDeque<(usize, Arc<Mutex<BlockCache>>)>,

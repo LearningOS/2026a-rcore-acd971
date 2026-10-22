@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -69,6 +69,16 @@ pub fn list_apps() {
         println!("{}", app);
     }
     println!("**************/");
+}
+
+/// Create a hard link `new_name` -> `old_name` in the root directory
+pub fn link_file(old_name: &str, new_name: &str) -> bool {
+    ROOT_INODE.link(old_name, new_name)
+}
+
+/// Remove the dirent `name` from the root directory
+pub fn unlink_file(name: &str) -> bool {
+    ROOT_INODE.unlink(name)
 }
 
 bitflags! {
@@ -155,5 +165,15 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn inode_stat(&self) -> Option<(u64, u32, StatMode)> {
+        let inner = self.inner.exclusive_access();
+        let (ino, nlink, is_dir) = inner.inode.stat_info();
+        let mode = if is_dir {
+            StatMode::DIR
+        } else {
+            StatMode::FILE
+        };
+        Some((ino, nlink, mode))
     }
 }

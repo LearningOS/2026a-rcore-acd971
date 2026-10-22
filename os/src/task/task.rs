@@ -1,6 +1,6 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
@@ -28,6 +28,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// how many times each syscall (indexed by syscall id) has been issued
+    pub syscall_counts: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlock {
@@ -38,6 +41,20 @@ impl TaskControlBlock {
     /// get the user token
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
+    }
+    /// increment the count of syscall `syscall_id` issued by this task
+    pub fn increment_syscall_count(&mut self, syscall_id: usize) {
+        if syscall_id < MAX_SYSCALL_NUM {
+            self.syscall_counts[syscall_id] = self.syscall_counts[syscall_id].wrapping_add(1);
+        }
+    }
+    /// get how many times syscall `syscall_id` has been issued by this task
+    pub fn get_syscall_count(&self, syscall_id: usize) -> u32 {
+        if syscall_id < MAX_SYSCALL_NUM {
+            self.syscall_counts[syscall_id]
+        } else {
+            0
+        }
     }
     /// Based on the elf info in program, build the contents of task in a new address space
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
@@ -63,6 +80,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_counts: [0; MAX_SYSCALL_NUM],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();

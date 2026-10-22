@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -133,6 +134,40 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// Increment the count of syscall `syscall_id` of the current 'Running' task
+    pub fn increment_current_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].increment_syscall_count(syscall_id);
+    }
+
+    /// Get the count of syscall `syscall_id` of the current 'Running' task
+    pub fn get_current_syscall_count(&self, syscall_id: usize) -> u32 {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].get_syscall_count(syscall_id)
+    }
+
+    /// Insert a mmap'd framed area into the current task's address space.
+    /// Return false if the range overlaps with an existing area.
+    pub fn insert_current_mmap_area(
+        &self,
+        start: VirtAddr,
+        end: VirtAddr,
+        perm: MapPermission,
+    ) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.insert_mmap_area(start, end, perm)
+    }
+
+    /// Remove the area exactly covering [start, end) from the current task's
+    /// address space. Return false if no such area exists.
+    pub fn remove_current_mmap_area(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.remove_framed_area(start, end)
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -201,4 +236,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Increment the count of syscall `syscall_id` of the current 'Running' task
+pub fn increment_current_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.increment_current_syscall_count(syscall_id)
+}
+
+/// Get the count of syscall `syscall_id` of the current 'Running' task
+pub fn get_current_syscall_count(syscall_id: usize) -> u32 {
+    TASK_MANAGER.get_current_syscall_count(syscall_id)
+}
+
+/// Insert a mmap'd framed area into the current task's address space
+pub fn insert_current_mmap_area(start: VirtAddr, end: VirtAddr, perm: MapPermission) -> bool {
+    TASK_MANAGER.insert_current_mmap_area(start, end, perm)
+}
+
+/// Remove the area exactly covering [start, end) from the current task's address space
+pub fn remove_current_mmap_area(start: VirtAddr, end: VirtAddr) -> bool {
+    TASK_MANAGER.remove_current_mmap_area(start, end)
 }

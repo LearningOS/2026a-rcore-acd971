@@ -26,7 +26,6 @@ use crate::timer::remove_timer;
 use alloc::{sync::Arc, vec::Vec};
 use lazy_static::*;
 use manager::fetch_task;
-use process::ProcessControlBlock;
 use switch::__switch;
 
 pub use context::TaskContext;
@@ -36,6 +35,7 @@ pub use processor::{
     current_kstack_top, current_process, current_task, current_trap_cx, current_trap_cx_user_va,
     current_user_token, run_tasks, schedule, take_current_task,
 };
+pub use process::ProcessControlBlock;
 pub use signal::SignalFlags;
 pub use task::{TaskControlBlock, TaskStatus};
 

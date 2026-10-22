@@ -207,6 +207,41 @@ pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
         .get_ref()
 }
 
+/// Read one byte at the user virtual address `addr` through the page table of
+/// the address space `token`. Returns None if the page is unmapped, not
+/// user-accessible or not readable.
+pub fn translated_user_read_byte(token: usize, addr: usize) -> Option<u8> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(addr);
+    let pte = page_table.translate(va.floor())?;
+    if !pte.is_valid() {
+        return None;
+    }
+    let flags = pte.flags();
+    if !flags.contains(PTEFlags::U) || !flags.contains(PTEFlags::R) {
+        return None;
+    }
+    Some(pte.ppn().get_bytes_array()[va.page_offset()])
+}
+
+/// Write one byte `val` to the user virtual address `addr` through the page
+/// table of the address space `token`. Returns None if the page is unmapped,
+/// not user-accessible or not writable.
+pub fn translated_user_write_byte(token: usize, addr: usize, val: u8) -> Option<()> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(addr);
+    let pte = page_table.translate(va.floor())?;
+    if !pte.is_valid() {
+        return None;
+    }
+    let flags = pte.flags();
+    if !flags.contains(PTEFlags::U) || !flags.contains(PTEFlags::W) {
+        return None;
+    }
+    pte.ppn().get_bytes_array()[va.page_offset()] = val;
+    Some(())
+}
+
 /// translate a pointer `ptr` in other address space to a mutable u8 slice in kernel address space. NOTICE: the content pointed to by the pointer `ptr` cannot cross physical pages, otherwise translated_byte_buffer should be used.
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);

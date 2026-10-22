@@ -2,11 +2,14 @@
 use alloc::sync::Arc;
 
 use crate::{
+    config::{BIG_STRIDE, PAGE_SIZE},
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{
+        translated_refmut, translated_str, MapPermission, PageTable, PTEFlags, VirtAddr,
+    },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, TaskControlBlock,
     },
 };
 
@@ -102,33 +105,112 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
+/// Translate a user virtual address through the current user page table and
+/// check permission bits. Returns the 4KiB physical page bytes if the page is
+/// valid, user-accessible and matches the required access, otherwise `None`.
+fn translated_user_page(
+    page_table: &PageTable,
+    addr: usize,
+    need_write: bool,
+) -> Option<&'static mut [u8]> {
+    let va = VirtAddr::from(addr);
+    let pte = page_table.translate(va.floor())?;
+    if !pte.is_valid() {
+        return None;
+    }
+    let flags = pte.flags();
+    if !flags.contains(PTEFlags::U) {
+        return None;
+    }
+    if need_write && !flags.contains(PTEFlags::W) {
+        return None;
+    }
+    if !need_write && !flags.contains(PTEFlags::R) {
+        return None;
+    }
+    Some(pte.ppn().get_bytes_array())
+}
+
+/// Write one byte `val` to user address `addr` through the page table.
+fn user_write_byte(page_table: &PageTable, addr: usize, val: u8) -> Option<()> {
+    let page = translated_user_page(page_table, addr, true)?;
+    page[VirtAddr::from(addr).page_offset()] = val;
+    Some(())
+}
+
 /// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().pid.0
     );
-    -1
+    let us = crate::timer::get_time_us();
+    let tv = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let src = &tv as *const TimeVal as *const u8;
+    let page_table = PageTable::from_token(current_user_token());
+    for i in 0..core::mem::size_of::<TimeVal>() {
+        let byte = unsafe { src.add(i).read() };
+        if user_write_byte(&page_table, ts as usize + i, byte).is_none() {
+            return -1;
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().pid.0
     );
-    -1
+    if len == 0 || start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    if port == 0 || port & !0b111 != 0 {
+        return -1;
+    }
+    let mut perm = MapPermission::U;
+    if port & 0b001 != 0 {
+        perm |= MapPermission::R;
+    }
+    if port & 0b010 != 0 {
+        perm |= MapPermission::W;
+    }
+    if port & 0b100 != 0 {
+        perm |= MapPermission::X;
+    }
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start + len);
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner.memory_set.insert_mmap_area(start_va, end_va, perm) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap",
         current_task().unwrap().pid.0
     );
-    -1
+    if len == 0 || start % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
+        return -1;
+    }
+    let start_va = VirtAddr::from(start);
+    let end_va = VirtAddr::from(start + len);
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner.memory_set.remove_framed_area(start_va, end_va) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
@@ -143,19 +225,48 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let current_task = current_task().unwrap();
+        // create the new process directly from the elf, instead of
+        // fork (copying the address space) and then exec (discarding it)
+        let new_task = Arc::new(TaskControlBlock::new(data));
+        let new_pid = new_task.pid.0;
+        // set parent and add to children list
+        new_task
+            .inner_exclusive_access()
+            .parent = Some(Arc::downgrade(&current_task));
+        current_task
+            .inner_exclusive_access()
+            .children
+            .push(new_task.clone());
+        // add new task to scheduler
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().pid.0
     );
-    -1
+    if prio < 2 {
+        return -1;
+    }
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    // clamp so that pass = BIG_STRIDE / priority is always at least 1
+    inner.priority = (prio as u64).min(BIG_STRIDE) as u32;
+    drop(inner);
+    prio
 }

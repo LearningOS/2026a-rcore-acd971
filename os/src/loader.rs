@@ -53,6 +53,14 @@ fn get_base_i(app_id: usize) -> usize {
     APP_BASE_ADDRESS + app_id * APP_SIZE_LIMIT
 }
 
+/// Address range of the static per-app user stacks.
+pub fn user_stack_range() -> (usize, usize) {
+    (
+        USER_STACK.as_ptr() as usize,
+        USER_STACK.as_ptr() as usize + MAX_APP_NUM * USER_STACK_SIZE,
+    )
+}
+
 /// Get the total number of applications.
 pub fn get_num_app() -> usize {
     extern "C" {
